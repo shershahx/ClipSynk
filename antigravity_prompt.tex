@@ -1,0 +1,112 @@
+% --- UNIVERSAL PREAMBLE BLOCK ---
+\documentclass[11pt, a4paper]{article}
+\usepackage[a4paper, top=2.5cm, bottom=2.5cm, left=2cm, right=2cm]{geometry}
+\usepackage{fontspec}
+
+\usepackage[english, bidi=basic, provide=*]{babel}
+
+\babelprovide[import, onchar=ids fonts]{english}
+
+% Set default/Latin font to Sans Serif in the main (rm) slot
+\babelfont{rm}{Noto Sans}
+
+% Packages for formatting
+\usepackage{xcolor}
+\usepackage{sectsty}
+\usepackage{parskip} % For better paragraph spacing
+\usepackage{hyperref}
+
+% Define custom colors
+\definecolor{primary}{RGB}{33, 37, 41}
+\definecolor{accent}{RGB}{0, 119, 204}
+\definecolor{lightgray}{RGB}{245, 245, 245}
+
+% Customize section styles
+\sectionfont{\color{accent}\Large\bfseries}
+\subsectionfont{\color{primary}\large\bfseries}
+
+% Title setup
+\title{\vspace{-2cm}\textbf{\huge Antigravity Agent Prompt: \\ Clipboard Sync App}}
+\author{}
+\date{\vspace{-1cm}}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty} % Remove page number on first page
+
+\section*{Role \& Objective}
+You are an elite, principal-level Flutter and Supabase architect. Your task is to build a complete, production-ready, cross-platform clipboard synchronization application targeting \textbf{Android} and \textbf{Windows (Desktop)}. 
+
+The app's sole purpose is to synchronize raw plain text from the system clipboard across authenticated devices in real-time, operating with minimal memory consumption and a modern, commercial-grade Material 3 UI.
+
+You must act as a single-turn senior developer: providing all necessary files, configurations, and complete code without skipping any steps.
+
+\section*{1. Architecture \& State Management}
+\begin{itemize}
+    \item \textbf{Framework:} Flutter (latest stable).
+    \item \textbf{State Management:} You MUST use \textbf{Riverpod 2.x/3.x with Code Generation} (\texttt{riverpod\_annotation}, \texttt{riverpod\_generator}, and \texttt{build\_runner}). Do not use manual \texttt{StateNotifier} or older Riverpod syntaxes.
+    \item \textbf{Memory \& Lifecycle Optimization:}
+    \begin{itemize}
+        \item Enforce \texttt{autoDispose} on all transient providers and stream controllers to prevent memory leaks.
+        \item Explicitly dispose of OS-level clipboard listeners, Realtime WebSocket channels, and timers when paused or logged out.
+        \item \textbf{Memory Cap:} Keep only the latest 20 items in local application memory. Older items within the 48-hour window should be handled gracefully (e.g., paginated from Supabase).
+    \end{itemize}
+\end{itemize}
+
+\section*{2. Backend \& Database (Supabase)}
+Provide a complete SQL migration script that sets up the backend.
+\begin{itemize}
+    \item \textbf{Database Schema (\texttt{clipboard\_items}):}
+    \begin{itemize}
+        \item \texttt{id}: uuid primary key (default gen\_random\_uuid())
+        \item \texttt{user\_id}: uuid (references auth.users, on delete cascade, not null)
+        \item \texttt{device\_id}: text (not null) - highly important for loop prevention.
+        \item \texttt{content}: text (not null)
+        \item \texttt{created\_at}: timestamptz (default now(), not null)
+    \end{itemize}
+    \item \textbf{Security (RLS):} Strict Row Level Security ensuring users can only read, insert, and delete their own rows (\texttt{auth.uid() = user\_id}).
+    \item \textbf{Realtime:} Enable real-time broadcast for this table.
+    \item \textbf{48-Hour TTL Cleanup:} Provide an automated PostgreSQL maintenance routine (using \texttt{pg\_cron} or equivalent Supabase trigger) to automatically delete rows where \texttt{created\_at < now() - interval '48 hours'}.
+\end{itemize}
+
+\section*{3. Clipboard Engine \& Sync Mechanics (CRITICAL)}
+\begin{itemize}
+    \item \textbf{Strict Content Validation:} Plain text only. Automatically drop/ignore file paths, image buffers, or binary clipboard formats.
+    \item \textbf{The "Infinite Loop" Prevention Logic:} You must meticulously design the sync engine to prevent echo loops.
+    \begin{enumerate}
+        \item Generate and persist a unique \texttt{device\_id} for the local device.
+        \item \textbf{Push Logic:} Monitor the local OS clipboard. When text changes locally, check if it matches the \textit{last text received from the cloud}. If it's different, push it to Supabase (attaching the \texttt{device\_id}).
+        \item \textbf{Pull Logic:} Listen to Supabase Realtime. When a new row is inserted, check if its \texttt{device\_id} matches the local device. If it DOES match, ignore it. If it DOES NOT match, write the \texttt{content} to the local OS clipboard using Flutter's \texttt{Clipboard.setData()}. Record this text in a local variable so the local clipboard watcher knows \textit{not} to push it back to the cloud.
+    \end{enumerate}
+    \item \textbf{Background \& Desktop Execution:}
+    \begin{itemize}
+        \item \textbf{Android:} Configure background permissions, boot-completed broadcast handlers, and necessary manifest tags.
+        \item \textbf{Windows:} Integrate the \texttt{tray\_manager} package. Clicking the standard window close 'X' should minimize the app to the system tray, keeping the sync engine active. Add a system tray context menu to "Restore" or "Quit" the app.
+    \end{itemize}
+\end{itemize}
+
+\section*{4. UI/UX \& Flow}
+\begin{itemize}
+    \item \textbf{Design Standards:} Polished, commercial-grade Material 3 with adaptive layouts. Support dynamic system Dark and Light themes.
+    \item \textbf{1. Functional Splash/Loading Screen:} Build a real, asynchronous initialization sequence. Sequentially: Initialize Supabase $\rightarrow$ Check Auth Session $\rightarrow$ Initialize hardware hooks (\texttt{tray\_manager}) $\rightarrow$ Establish Realtime connection. Show UI status text (e.g., "Authenticating...", "Connecting sync engine...").
+    \item \textbf{2. Auth Screen:} Simple Email/Password or Magic Link login to link devices to the same Supabase \texttt{user\_id}.
+    \item \textbf{3. Main Dashboard:}
+    \begin{itemize}
+        \item Status indicator (e.g., Green pulse for "Live Sync", Red for "Disconnected").
+        \item Master toggle switch to pause/resume automatic clipboard sync.
+        \item Device identifier display.
+        \item History List: Display recent synced items with timestamps. Include a manual "Copy" button for each item. Show a sleek illustration/empty state if history is empty.
+    \end{itemize}
+\end{itemize}
+
+\section*{5. Output Rules (NON-NEGOTIABLE)}
+\begin{enumerate}
+    \item \textbf{NO PLACEHOLDERS:} Do not use \texttt{// TODO: implement}, \texttt{// ...rest of code}, or truncate functions. Output 100\% complete, runnable files.
+    \item Provide the full \textbf{Supabase SQL Migration Script}.
+    \item Provide the complete \textbf{\texttt{pubspec.yaml}} with all necessary dependencies and \texttt{dev\_dependencies}.
+    \item Provide the \textbf{Windows (\texttt{windows/runner/main.cpp} or similar changes)} and \textbf{Android (\texttt{AndroidManifest.xml})} configuration files needed for background/tray capabilities.
+    \item Provide the \textbf{Dart Source Code} separated logically (e.g., \texttt{main.dart}, \texttt{router.dart}, \texttt{sync\_service.dart}, \texttt{auth\_screen.dart}, \texttt{dashboard.dart}).
+    \item Output the exact terminal command required to run \texttt{build\_runner} for the Riverpod code generation.
+\end{enumerate}
+
+\end{document}

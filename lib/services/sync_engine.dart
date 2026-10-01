@@ -1,0 +1,274 @@
+import 'dart:async';
+import 'dart:developer' as dev;
+
+import 'package:clip_sync/core/device_id_service.dart';
+import 'package:clip_sync/models/clipboard_item.dart';
+import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+/// Core clipboard sync engine.
+///
+/// Handles:
+/// - Local clipboard polling & change detection
+/// - Pushing new local clipboard text to Supabase
+/// - Listening to Supabase Realtime for remote clipboard inserts
+/// - Writing remote clipboard items to the local OS clipboard
+/// - Infinite-loop prevention via device_id + last-received tracking
+class SyncEngine {
+  SyncEngine({
+    required this.deviceId,
+    required this.userId,
+    this.onItemsChanged,
+    this.onSyncStatusChanged,
+  });
+
+  final String deviceId;
+  final String userId;
+  final void Function(List<ClipboardItem> items)? onItemsChanged;
+  final void Function(bool isConnected)? onSyncStatusChanged;
+
+  final SupabaseClient _supabase = Supabase.instance.client;
+
+  /// The last text we received from the cloud and wrote to the local clipboard.
+  /// Used to prevent echo: when the local watcher sees this text, it won't push it back.
+  String? _lastReceivedFromCloud;
+
+  /// The last text we read from the local clipboard.
+  String? _lastLocalClipboardText;
+
+  /// In-memory clipboard history (capped at 20 items).
+  final List<ClipboardItem> _items = [];
+  static const int _maxItemsInMemory = 20;
+
+  /// Polling timer for local clipboard changes.
+  Timer? _clipboardPollTimer;
+
+  /// Supabase Realtime channel.
+  RealtimeChannel? _realtimeChannel;
+
+  /// Whether the sync engine is currently active.
+  bool _isActive = false;
+  bool get isActive => _isActive;
+
+  /// Whether realtime is connected.
+  bool _isConnected = false;
+  bool get isConnected => _isConnected;
+
+  // ── Lifecycle ───────────────────────────────────────────────────
+
+  /// Start the sync engine: load history, start polling, subscribe to Realtime.
+  Future<void> start() async {
+    if (_isActive) {
+      dev.log('start() called but already active, skipping', name: 'SyncEngine');
+      return;
+    }
+
+    dev.log('Starting sync engine for user=$userId device=$deviceId',
+        name: 'SyncEngine');
+
+    // Load history first — if this fails, still continue with polling & realtime
+    await _loadInitialHistory();
+
+    // Start local clipboard polling
+    _startClipboardPolling();
+
+    // Subscribe to realtime changes
+    _subscribeToRealtime();
+
+    // Only set active AFTER everything is set up
+    _isActive = true;
+    dev.log('Sync engine is now active', name: 'SyncEngine');
+  }
+
+  /// Pause the sync engine: stop polling and unsubscribe from Realtime.
+  void pause() {
+    _isActive = false;
+    _stopClipboardPolling();
+    _unsubscribeFromRealtime();
+    _isConnected = false;
+    onSyncStatusChanged?.call(false);
+    dev.log('Sync engine paused', name: 'SyncEngine');
+  }
+
+  /// Dispose of all resources.
+  void dispose() {
+    pause();
+    _items.clear();
+  }
+
+  // ── Initial History Load ────────────────────────────────────────
+
+  Future<void> _loadInitialHistory() async {
+    try {
+      dev.log('Loading initial clipboard history...', name: 'SyncEngine');
+      final response = await _supabase
+          .from('clipboard_items')
+          .select()
+          .eq('user_id', userId)
+          .order('created_at', ascending: false)
+          .limit(_maxItemsInMemory);
+
+      _items.clear();
+      for (final row in response) {
+        _items.add(ClipboardItem.fromJson(row));
+      }
+      onItemsChanged?.call(List.unmodifiable(_items));
+      dev.log('Loaded ${_items.length} clipboard items', name: 'SyncEngine');
+    } catch (e, stack) {
+      dev.log('Failed to load clipboard history: $e',
+          name: 'SyncEngine', error: e, stackTrace: stack);
+      // Don't rethrow — engine should still start polling & realtime
+    }
+  }
+
+  // ── Local Clipboard Polling (Push Logic) ────────────────────────
+
+  void _startClipboardPolling() {
+    _clipboardPollTimer?.cancel();
+    _clipboardPollTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _pollClipboard(),
+    );
+    dev.log('Clipboard polling started (2s interval)', name: 'SyncEngine');
+  }
+
+  void _stopClipboardPolling() {
+    _clipboardPollTimer?.cancel();
+    _clipboardPollTimer = null;
+  }
+
+  Future<void> _pollClipboard() async {
+    if (!_isActive) return;
+
+    final text = await ClipboardValidator.getValidClipboardText();
+    if (text == null) return;
+
+    // No change from what we already know
+    if (text == _lastLocalClipboardText) return;
+
+    _lastLocalClipboardText = text;
+
+    // If this text is what we just received from the cloud, don't push it back
+    if (text == _lastReceivedFromCloud) return;
+
+    // New local clipboard content → push to Supabase
+    await _pushToSupabase(text);
+  }
+
+  Future<void> _pushToSupabase(String text) async {
+    try {
+      final item = ClipboardItem(
+        id: '', // will be generated by DB
+        userId: userId,
+        deviceId: deviceId,
+        content: text,
+        createdAt: DateTime.now(),
+      );
+
+      await _supabase.from('clipboard_items').insert(item.toInsertJson());
+      dev.log('Pushed clipboard to cloud: ${text.length} chars',
+          name: 'SyncEngine');
+    } catch (e) {
+      dev.log('Failed to push clipboard: $e', name: 'SyncEngine');
+    }
+  }
+
+  // ── Supabase Realtime (Pull Logic) ──────────────────────────────
+
+  void _subscribeToRealtime() {
+    _unsubscribeFromRealtime();
+
+    dev.log('Subscribing to realtime for user=$userId', name: 'SyncEngine');
+
+    _realtimeChannel = _supabase
+        .channel('clipboard_changes')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'clipboard_items',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: userId,
+          ),
+          callback: (payload) => _handleRealtimeInsert(payload),
+        )
+        .subscribe((status, [error]) {
+      final connected = status == RealtimeSubscribeStatus.subscribed;
+      _isConnected = connected;
+      onSyncStatusChanged?.call(connected);
+      dev.log(
+          'Realtime status: $status${error != null ? ' error=$error' : ''}',
+          name: 'SyncEngine');
+    });
+  }
+
+  void _unsubscribeFromRealtime() {
+    if (_realtimeChannel != null) {
+      _supabase.removeChannel(_realtimeChannel!);
+      _realtimeChannel = null;
+    }
+  }
+
+  void _handleRealtimeInsert(PostgresChangePayload payload) {
+    try {
+      final newRecord = payload.newRecord;
+      final item = ClipboardItem.fromJson(newRecord);
+
+      // Add to in-memory list (front)
+      _items.insert(0, item);
+      if (_items.length > _maxItemsInMemory) {
+        _items.removeRange(_maxItemsInMemory, _items.length);
+      }
+      onItemsChanged?.call(List.unmodifiable(_items));
+
+      // If it's from THIS device, ignore (don't write to clipboard)
+      if (item.deviceId == deviceId) {
+        dev.log('Ignored own insert from device: $deviceId',
+            name: 'SyncEngine');
+        return;
+      }
+
+      // From another device → write to local clipboard
+      _lastReceivedFromCloud = item.content;
+      _lastLocalClipboardText = item.content;
+      Clipboard.setData(ClipboardData(text: item.content));
+      dev.log(
+          'Wrote remote clipboard to local: ${item.content.length} chars from ${item.deviceId}',
+          name: 'SyncEngine');
+    } catch (e) {
+      dev.log('Error handling realtime insert: $e', name: 'SyncEngine');
+    }
+  }
+
+  // ── Manual Actions ──────────────────────────────────────────────
+
+  /// Delete a clipboard item by ID.
+  Future<void> deleteItem(String itemId) async {
+    try {
+      await _supabase.from('clipboard_items').delete().eq('id', itemId);
+      _items.removeWhere((item) => item.id == itemId);
+      onItemsChanged?.call(List.unmodifiable(_items));
+    } catch (e) {
+      dev.log('Failed to delete item: $e', name: 'SyncEngine');
+    }
+  }
+
+  /// Clear all clipboard items for this user.
+  Future<void> clearAll() async {
+    try {
+      await _supabase.from('clipboard_items').delete().eq('user_id', userId);
+      _items.clear();
+      onItemsChanged?.call(List.unmodifiable(_items));
+    } catch (e) {
+      dev.log('Failed to clear items: $e', name: 'SyncEngine');
+    }
+  }
+
+  /// Copy text to the local clipboard (manual action from history).
+  Future<void> copyToClipboard(String text) async {
+    _lastReceivedFromCloud = text;
+    _lastLocalClipboardText = text;
+    await Clipboard.setData(ClipboardData(text: text));
+  }
+}
