@@ -48,6 +48,13 @@ dependencies:
   timeago: ^3.7.1
   google_fonts: ^8.2.1
   permission_handler: ^13.0.2
+  pasteboard: ^0.5.0
+  path_provider: ^2.1.6
+  crypto: ^3.0.7
+  image: ^4.10.1
+  file_picker: ^13.1.0
+  open_filex: ^4.7.0
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:

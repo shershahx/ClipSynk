@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:developer' as dev;
+import 'dart:typed_data';
 
 import 'package:clip_sync/core/device_id_service.dart';
 import 'package:clip_sync/models/clipboard_item.dart';
@@ -75,6 +76,9 @@ class SyncEngineNotifier extends _$SyncEngineNotifier {
               name: 'SyncEngineNotifier');
           state = state.copyWith(isConnected: isConnected);
         },
+        onError: (message) {
+          state = state.copyWith(error: message);
+        },
       );
 
       await _engine!.start();
@@ -131,6 +135,22 @@ class SyncEngineNotifier extends _$SyncEngineNotifier {
     }
   }
 
+  /// Manually pull remote clips and push the current local clipboard.
+  Future<void> syncNow() async {
+    await _engine?.syncNow();
+  }
+
+  /// Stop and discard the engine (e.g. on sign-out) and reset the state.
+  void reset() {
+    _engine?.dispose();
+    _engine = null;
+    state = const SyncEngineState(
+      items: [],
+      isActive: false,
+      isConnected: false,
+    );
+  }
+
   /// Delete a clipboard item.
   Future<void> deleteItem(String itemId) async {
     await _engine?.deleteItem(itemId);
@@ -141,9 +161,26 @@ class SyncEngineNotifier extends _$SyncEngineNotifier {
     await _engine?.clearAll();
   }
 
-  /// Copy an item to the local clipboard.
-  Future<void> copyToClipboard(String text) async {
-    await _engine?.copyToClipboard(text);
+  /// Copy an item (text, image or file) to the local clipboard.
+  Future<String> copyItem(ClipboardItem item) async {
+    return await _engine?.copyItem(item) ?? 'Sync is not running';
+  }
+
+  /// Open an image/file item with the system's default app.
+  Future<String?> openItem(ClipboardItem item) async {
+    return await _engine?.openItem(item) ?? 'Sync is not running';
+  }
+
+  /// Upload a user-picked image/file. Returns an error message or null.
+  Future<String?> sendFile(String fileName, Uint8List bytes) async {
+    return await _engine?.sendFile(fileName, bytes) ?? 'Sync is not running';
+  }
+
+  /// Bytes of an image/file item (for thumbnails).
+  Future<Uint8List> fetchItemBytes(ClipboardItem item) async {
+    final engine = _engine;
+    if (engine == null) throw StateError('Sync is not running');
+    return engine.fetchBytes(item);
   }
 }
 
@@ -270,7 +307,7 @@ class AuthNotifier extends _$AuthNotifier {
     await Supabase.instance.client.auth.signOut();
     state = AuthStatus.unauthenticated;
     // Reset sync engine
-    ref.read(syncEngineProvider.notifier).build();
+    ref.read(syncEngineProvider.notifier).reset();
   }
 }
 

@@ -1,3 +1,4 @@
+import 'dart:developer' as dev;
 import 'dart:io';
 
 import 'package:tray_manager/tray_manager.dart';
@@ -18,8 +19,15 @@ class TrayService with TrayListener {
     if (!Platform.isWindows) return;
     if (_initialized) return;
 
-    await trayManager.setIcon('windows/runner/resources/app_icon.ico');
-    await trayManager.setToolTip('ClipSync — Clipboard Sync');
+    try {
+      // Resolved by tray_manager relative to the bundled flutter_assets folder.
+      await trayManager.setIcon('assets/app_icon.ico');
+      await trayManager.setToolTip('ClipSync — Clipboard Sync');
+    } catch (e) {
+      // A missing tray icon must never block app start-up.
+      dev.log('Tray icon setup failed: $e', name: 'TrayService');
+      return;
+    }
 
     final menu = Menu(
       items: [

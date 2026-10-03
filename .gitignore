@@ -81,4 +81,9 @@ $RECYCLE.BIN/
 # Antigravity / Gemini agent state
 .agents/
 .gemini/
-supabase_config.dart
+
+# Local Supabase credentials (never commit - see README)
+lib/core/supabase_config.dart
+
+# Installer output and local icon source pack
+/build/installer/

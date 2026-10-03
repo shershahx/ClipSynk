@@ -36,6 +36,39 @@
             </intent-filter>
         </activity>
 
+        <!-- Invisible activity that reads the clipboard for the Quick Settings tile -->
+        <activity
+            android:name=".SendClipboardActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance"
+            android:theme="@style/TransparentTheme" />
+
+        <!-- Quick Settings tile: send current clipboard to ClipSync -->
+        <service
+            android:name=".ClipboardTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_send_clipboard"
+            android:label="Send clipboard"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- Lets the pasteboard plugin put images on the Android clipboard -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/provider_paths" />
+        </provider>
+
         <!-- Boot completed receiver for background service restart -->
         <receiver
             android:name="com.clipsync.clip_sync.BootReceiver"
